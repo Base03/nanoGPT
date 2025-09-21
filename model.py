@@ -105,6 +105,36 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class HouseHolder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.n_house = config.n_house
+        self.n_embd = config.n_embd
+        self.vectors = nn.Parameter(torch.randn(self.n_house, self.n_embd))
+        # normalize the vectors to unit length to ensure stability
+        with torch.no_grad():
+            self.vectors.copy_(F.normalize(self.vectors, p=2, dim=-1))
+
+    def forward(self, x, reverse=False):
+        """
+        Apply Householder transformations.
+        
+        Args:
+            x: Input tensor of shape (B, T, C)
+            reverse: If True, apply transformations in reverse order
+        """
+        # Determine the order of transformations
+        indices = range(self.n_house-1, -1, -1) if reverse else range(self.n_house)
+        
+        # Apply householder transformations:
+        for i in indices:
+            # v = F.normalize(self.vectors[i], p=2, dim=-1)  # More stable normalization
+            v = self.vectors[i]
+            # Compute dot product: (B, T, C) @ (C, 1) -> (B, T, 1)
+            dot_product = x @ v.unsqueeze(-1) / (v.norm(p=2) + 1e-8)  # (B,T,C) @ (C,1) -> (B,T,1)
+            # Apply Householder reflection: x - 2(v·x)v
+            x = x - 2 * dot_product * v.unsqueeze(0).unsqueeze(0) # (B,T,C) - 2*(B,T,1)*(1,1,C) -> (B,T,C)
+        return x
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -113,6 +143,8 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
     dropout: float = 0.0
+    n_house: int = 0
+    n_loop: int = 1
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
@@ -128,6 +160,7 @@ class GPT(nn.Module):
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            householder = nn.ModuleList([HouseHolder(config) for _ in range(config.n_layer)]) if config.n_house > 0 else None,
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -176,9 +209,19 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
-            x = block(x)
+        for index in range(self.config.n_layer):
+            if self.config.n_house > 0:
+                x = self.transformer.householder[index](x)
+            for _ in range(self.config.n_loop):
+                x = self.transformer.h[index](x)
+            if self.config.n_house > 0:
+                x = self.transformer.householder[index](x, reverse=True)
+        
+        # for block in self.transformer.h:
+        #     x = block(x)
+
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -208,7 +251,7 @@ class GPT(nn.Module):
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         override_args = override_args or {} # default to empty dict
         # only dropout can be overridden see more notes below
-        assert all(k == 'dropout' for k in override_args)
+        assert all(k in ['dropout', 'n_house', 'n_loop'] for k in override_args)
         from transformers import GPT2LMHeadModel
         print("loading weights from pretrained gpt: %s" % model_type)
 
@@ -227,12 +270,20 @@ class GPT(nn.Module):
         if 'dropout' in override_args:
             print(f"overriding dropout rate to {override_args['dropout']}")
             config_args['dropout'] = override_args['dropout']
+        # we can override householder and loop parameters
+        if 'n_house' in override_args:
+            print(f"overriding n_house to {override_args['n_house']}")
+            config_args['n_house'] = override_args['n_house']
+        if 'n_loop' in override_args:
+            print(f"overriding n_loop to {override_args['n_loop']}")
+            config_args['n_loop'] = override_args['n_loop']
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
         model = GPT(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
+        sd_keys = [k for k in sd_keys if not k.startswith('transformer.householder.')] # filter out householder params
 
         # init a huggingface/transformers model
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)

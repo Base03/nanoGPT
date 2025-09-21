@@ -11,6 +11,7 @@ wandb_run_name='gpt2-124M_4090'
 batch_size = 24
 block_size = 1024
 gradient_accumulation_steps = 5 * 4
+#gradient_accumulation_steps = 2
 
 # this makes total number of tokens be 300B
 max_iters = 600000
@@ -23,3 +24,12 @@ log_interval = 10
 
 # weight decay
 weight_decay = 1e-1
+
+# model
+n_layer = 16
+n_head = 12
+n_embd = 768
+dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
+n_house = 0
+n_loop = 1
+bias = False # do we use bias inside LayerNorm and Linear layers?
