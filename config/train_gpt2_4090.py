@@ -8,9 +8,9 @@ wandb_run_name='gpt2-124M_4090'
 
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 * 8 gradaccum * 1 GPUs = 491,520
-batch_size = 24
+batch_size = 12
 block_size = 1024
-gradient_accumulation_steps = 5 * 4
+gradient_accumulation_steps = 5 * 4*2
 #gradient_accumulation_steps = 2
 
 # this makes total number of tokens be 300B
@@ -26,10 +26,14 @@ log_interval = 10
 weight_decay = 1e-1
 
 # model
-n_layer = 16
-n_head = 12
-n_embd = 768
+n_layer = 32 // 4
+n_head = 12 * 2
+n_embd = 768 * 2
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 n_house = 0
 n_loop = 1
 bias = False # do we use bias inside LayerNorm and Linear layers?
+
+n_layer = 14
+n_head = 12 * 3 // 2
+n_embd = 768 * 3 // 2
